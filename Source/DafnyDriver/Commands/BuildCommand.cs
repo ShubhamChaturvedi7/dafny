@@ -1,7 +1,4 @@
-using System.Collections.Generic;
 using System.CommandLine;
-using System.CommandLine.Invocation;
-using System.Linq;
 
 namespace Microsoft.Dafny;
 
@@ -21,7 +18,7 @@ public static class BuildCommand {
     DafnyNewCli.SetHandlerUsingDafnyOptionsContinuation(result, (options, _) => {
       options.Compile = true;
       options.RunAfterCompile = false;
-      options.ForceCompile = options.Get(BoogieOptionBag.NoVerify);
+      options.ForceCompile = options.Get(BoogieOptionBag.NoVerify) || options.Get(BoogieOptionBag.HiddenNoVerify);
       return SynchronousCliCompilation.Run(options);
     });
     return result;

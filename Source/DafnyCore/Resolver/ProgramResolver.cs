@@ -196,9 +196,7 @@ public class ProgramResolver {
     // Check that none of the modules have the same CompileName.
     Dictionary<string, ModuleDefinition> compileNameMap = new Dictionary<string, ModuleDefinition>();
     foreach (ModuleDefinition m in program.CompileModules) {
-      var compileIt = true;
-      Attributes.ContainsBool(m.Attributes, "compile", ref compileIt);
-      if (!m.CanCompile() || !compileIt) {
+      if (!m.CanCompile() || !ShouldCompile(m)) {
         // the purpose of an abstract module is to skip compilation
         continue;
       }
@@ -214,16 +212,23 @@ public class ProgramResolver {
     }
   }
 
+  public static bool ShouldCompile(IAttributeBearingDeclaration m) {
+    var compileIt = true;
+    Attributes.ContainsBool(m.Attributes, "compile", ref compileIt);
+    return compileIt;
+  }
+
   protected void InstantiateReplaceableModules(Program dafnyProgram) {
     foreach (var compiledModule in dafnyProgram.Modules().OrderByDescending(m => m.Height)) {
       if (compiledModule.Implements is { Kind: ImplementationKind.Replacement }) {
         var target = compiledModule.Implements.Target.Def;
-        if (target.Replacement != null) {
-          Reporter!.Error(MessageSource.Resolver, new NestedToken(compiledModule.Tok, target.Replacement.Tok,
+        var replacement = Program.Replacements.GetValueOrDefault(target);
+        if (replacement != null) {
+          Reporter!.Error(MessageSource.Resolver, new NestedToken(compiledModule.Tok, replacement.Tok,
               $"other replacing module"),
             "a replaceable module may only be replaced once");
         } else {
-          target.Replacement = compiledModule.Replacement ?? compiledModule;
+          Program.Replacements[target] = Program.Replacements.GetValueOrDefault(compiledModule, compiledModule);
         }
       }
     }

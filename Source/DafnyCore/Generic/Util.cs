@@ -26,6 +26,12 @@ namespace Microsoft.Dafny {
 
   public static class Util {
 
+    public static Task WaitForComplete<T>(this IObservable<T> observable) {
+      var result = new TaskCompletionSource();
+      observable.Subscribe(_ => { }, e => result.SetException(e), () => result.SetResult());
+      return result.Task;
+    }
+
     public static string CapitaliseFirstLetter(this string input) {
       if (input.Length > 0) {
         return char.ToUpper(input[0]) + input.Substring(1);
@@ -896,7 +902,7 @@ namespace Microsoft.Dafny {
           return true;
         }
       } else if (memberDeclaration is Function f) {
-        if (f.Formals.Any(Traverse)) {
+        if (f.Ins.Any(Traverse)) {
           return true;
         }
         if (f.Result != null && f.Result.DefaultValue != null && Traverse(f.Result.DefaultValue, "Result.DefaultValue", f)) {

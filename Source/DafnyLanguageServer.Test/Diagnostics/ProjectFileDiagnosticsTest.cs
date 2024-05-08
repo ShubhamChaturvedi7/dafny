@@ -20,8 +20,8 @@ public class ProjectFileDiagnosticsTest : ClientBasedLanguageServerTest {
     var projectFile = await CreateOpenAndWaitForResolve(projectFileSource, DafnyProject.FileName);
     var diagnostics = await GetLastDiagnostics(projectFile, DiagnosticSeverity.Error);
     Assert.Single(diagnostics);
-    Assert.Equal(new Range(0, 0, 0, 0), diagnostics.First().Range);
-    Assert.Contains("contains the following errors", diagnostics.First().Message);
+    Assert.Equal(new Range(0, 12, 0, 12), diagnostics.First().Range);
+    Assert.Contains("Unexpected token", diagnostics.First().Message);
   }
 
   [Fact]
@@ -34,10 +34,8 @@ public class ProjectFileDiagnosticsTest : ClientBasedLanguageServerTest {
     await CreateOpenAndWaitForResolve("method Foo() { }", Path.Combine(directory, "ProjectFileErrorIsShownFromDafnyFile.dfy"));
     var diagnostics = await diagnosticsReceiver.AwaitNextNotificationAsync(CancellationToken);
     Assert.Equal(DocumentUri.File(projectFilePath), diagnostics.Uri.GetFileSystemPath());
-    Assert.Equal(2, diagnostics.Diagnostics.Count());
-    Assert.Equal(new Range(0, 0, 0, 0), diagnostics.Diagnostics.First().Range);
-    Assert.Contains(diagnostics.Diagnostics, d => d.Message.Contains("contains the following errors"));
-    Assert.Contains(diagnostics.Diagnostics, d => d.Message.Contains($"Files referenced by project are:{Environment.NewLine}ProjectFileErrorIsShownFromDafnyFile.dfy"));
+    Assert.Single(diagnostics.Diagnostics);
+    Assert.Contains(diagnostics.Diagnostics, d => d.Message.Contains("Unexpected token"));
   }
 
   [Fact]
@@ -61,8 +59,8 @@ library = [""doesNotExist.dfy""]
 
     var project = CreateAndOpenTestDocument(projectFile, DafnyProject.FileName);
     var diagnostics = await GetLastDiagnostics(project, DiagnosticSeverity.Error);
-    Assert.Single(diagnostics);
-    Assert.Contains("not found", diagnostics[0].Message);
+    Assert.Equal(2, diagnostics.Length);
+    Assert.Contains(diagnostics, d => d.Message.Contains("not found"));
   }
 
   public ProjectFileDiagnosticsTest(ITestOutputHelper output, LogLevel dafnyLogLevel = LogLevel.Information)

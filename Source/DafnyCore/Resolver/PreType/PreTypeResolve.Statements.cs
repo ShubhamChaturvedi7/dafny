@@ -129,7 +129,7 @@ namespace Microsoft.Dafny {
             if (expr is ApplySuffix applySuffix) {
               var methodCallInfo = ResolveApplySuffix(applySuffix, revealResolutionContext, true);
               if (methodCallInfo == null) {
-                ReportError(expr.tok, "expression has no reveal lemma");
+                // error has already been reported
               } else if (methodCallInfo.Callee.Member is TwoStateLemma && !revealResolutionContext.IsTwoState) {
                 ReportError(methodCallInfo.Tok, "a two-state function can only be revealed in a two-state context");
               } else if (methodCallInfo.Callee.AtLabel != null) {
@@ -544,7 +544,9 @@ namespace Microsoft.Dafny {
 #if SOON
           // reuse the error object if we're on the dummy line; this prevents a duplicate error message
 #endif
-          AddSubtypeConstraint(linePreType, e1.PreType, e1.tok, "all lines in a calculation must have the same type (got {1} after {0})");
+          if (i < s.Lines.Count - 1) {
+            AddSubtypeConstraint(linePreType, e1.PreType, e1.tok, "all lines in a calculation must have the same type (got {1} after {0})");
+          }
           var step = (s.StepOps[i - 1] ?? s.Op).StepExpr(e0, e1); // Use custom line operator
           ResolveExpression(step, resolutionContext);
           s.Steps.Add(step);
@@ -1111,35 +1113,35 @@ namespace Microsoft.Dafny {
       }
 
       s.ResolvedStatements.ForEach(a => ResolveStatement(a, resolutionContext));
-      EnsureSupportsErrorHandling(s.Tok, failureSupportingType, expectExtract, s.KeywordToken != null);
+      EnsureSupportsErrorHandling(s.Tok, failureSupportingType, expectExtract, s.KeywordToken?.Token.val);
     }
 
-    private void EnsureSupportsErrorHandling(IToken tok, TopLevelDeclWithMembers failureSupportingType, bool expectExtract, bool hasKeywordToken) {
+    private void EnsureSupportsErrorHandling(IToken tok, TopLevelDeclWithMembers failureSupportingType, bool expectExtract, [CanBeNull] string keyword) {
 
       var isFailure = failureSupportingType.Members.Find(x => x.Name == "IsFailure");
       var propagateFailure = failureSupportingType.Members.Find(x => x.Name == "PropagateFailure");
       var extract = failureSupportingType.Members.Find(x => x.Name == "Extract");
 
-      if (hasKeywordToken) {
+      if (keyword != null) {
         if (isFailure == null || (extract != null) != expectExtract) {
           // more details regarding which methods are missing have already been reported by regular resolution
-          ReportError(tok,
-            "The right-hand side of ':-', which is of type '{0}', with a keyword token must have function{1}", failureSupportingType,
-            expectExtract ? "s 'IsFailure()' and 'Extract()'" : " 'IsFailure()', but not 'Extract()'");
+          var requiredMembers = expectExtract
+            ? "functions 'IsFailure()' and 'Extract()'"
+            : "function 'IsFailure()', but not 'Extract()'";
+          ReportError(tok, $"The right-hand side of ':- {keyword}', which is of type '{failureSupportingType}', must have {requiredMembers}");
         }
       } else {
         if (isFailure == null || propagateFailure == null || (extract != null) != expectExtract) {
           // more details regarding which methods are missing have already been reported by regular resolution
-          ReportError(tok,
-            "The right-hand side of ':-', which is of type '{0}', must have function{1}", failureSupportingType,
-            expectExtract
-              ? "s 'IsFailure()', 'PropagateFailure()', and 'Extract()'"
-              : "s 'IsFailure()' and 'PropagateFailure()', but not 'Extract()'");
+          var requiredMembers = expectExtract
+            ? "functions 'IsFailure()', 'PropagateFailure()', and 'Extract()'"
+            : "functions 'IsFailure()' and 'PropagateFailure()', but not 'Extract()'";
+          ReportError(tok, $"The right-hand side of ':-', which is of type '{failureSupportingType}', must have {requiredMembers}");
         }
       }
 
-      void checkIsFunction([CanBeNull] MemberDecl memberDecl, bool allowMethod) {
-        if (memberDecl == null || memberDecl is Function) {
+      void CheckIsFunction([CanBeNull] MemberDecl memberDecl, bool allowMethod) {
+        if (memberDecl is null or Function) {
           // fine
         } else if (allowMethod && memberDecl is Method) {
           // give a deprecation warning, so we will remove this language feature around the Dafny 4 time frame
@@ -1153,12 +1155,12 @@ namespace Microsoft.Dafny {
         }
       }
 
-      checkIsFunction(isFailure, false);
-      if (!hasKeywordToken) {
-        checkIsFunction(propagateFailure, true);
+      CheckIsFunction(isFailure, false);
+      if (keyword == null) {
+        CheckIsFunction(propagateFailure, true);
       }
       if (expectExtract) {
-        checkIsFunction(extract, true);
+        CheckIsFunction(extract, true);
       }
     }
 
@@ -1308,7 +1310,7 @@ namespace Microsoft.Dafny {
         var arrayType = resolver.ResolvedArrayType(ll.Seq.tok, 1, new InferredTypeProxy(), resolutionContext, true);
         AddSubtypeConstraint(Type2PreType(arrayType), ll.Seq.PreType, ll.Seq.tok, "LHS of array assignment must denote an array element (found {1})");
         if (!ll.SelectOne) {
-          ReportError(ll.Seq, "cannot assign to a range of array elements (try the 'forall' statement)");
+          ReportError(ll, "cannot assign to a range of array elements (try the 'forall' statement)");
         }
       } else if (lhs is MultiSelectExpr) {
         // nothing to check; this can only denote an array element
