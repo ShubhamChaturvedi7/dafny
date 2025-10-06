@@ -269,3 +269,28 @@ module GreaterRegression {
     var u := s >= s; // error: >= is not for seq
   }
 }
+
+module ArrayInitializer {
+  method TestFunctionInit(n: nat, init: nat -> nat) {
+    var a: array<bool> := new [n](init); // error: array<int> and array<bool> are incompatible
+  }
+
+  method TestDisplayInit(n: nat, init: nat -> nat) {
+    var a: array<bool> := new [n] [23]; // error: array<int> and array<bool> are incompatible
+  }
+}
+
+module EscapedStringLiterals {
+  // Make sure that string literals given in the input are properly escaped before they are
+  // displayed in error messages
+  method Test() returns (u: int) {
+    u := "x"; // error
+    u := "{"; // error
+    u := "{{"; // error
+    u := "}"; // error
+    u := "{0}"; // error
+
+    u := 'x'; // error
+    u := '{'; // error
+  }
+}

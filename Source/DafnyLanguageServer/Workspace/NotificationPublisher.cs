@@ -7,7 +7,6 @@ using OmniSharp.Extensions.LanguageServer.Protocol.Document;
 using OmniSharp.Extensions.LanguageServer.Protocol.Models;
 using OmniSharp.Extensions.LanguageServer.Protocol.Server;
 using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.Dafny.LanguageServer.IntegrationTest.Util;
 using Microsoft.Extensions.Logging;
 using OmniSharp.Extensions.LanguageServer.Protocol;
@@ -87,16 +86,25 @@ namespace Microsoft.Dafny.LanguageServer.Workspace {
 
         languageServer.SendNotification(new CompilationStatusParams {
           Uri = uri,
-          Version = filesystem.GetVersion(uri),
+          Version = GetFileVersion(state, uri),
           Status = current,
           Message = null
         });
       }
     }
 
+    private static int? GetFileVersion(IdeState state, Uri uri) {
+      int? version = null;
+      if (state.VersionedFiles.TryGetValue(uri, out var file)) {
+        version = file;
+      }
+
+      return version;
+    }
+
     private FileVerificationStatus GetFileVerificationStatus(IdeState state, Uri uri) {
       var verificationResults = state.GetVerificationResults(uri);
-      return new FileVerificationStatus(uri, filesystem.GetVersion(uri),
+      return new FileVerificationStatus(uri, GetFileVersion(state, uri),
         verificationResults.Select(kv => GetNamedVerifiableStatuses(kv.Key, kv.Value)).
             OrderBy(s => s.NameRange.Start).ToList());
     }
@@ -158,7 +166,7 @@ namespace Microsoft.Dafny.LanguageServer.Workspace {
 
           projectDiagnostics.Add(new Diagnostic {
             Range = new Range(0, 0, 0, 1),
-            Message = $"the referenced file {uri.LocalPath} contains error(s) but is not owned by this project. The first error is:\n{errors.First().Message}",
+            Message = $"the file {uri.LocalPath} contains error(s) when used by this project, but is part of a different project. The first error is:\n{errors.First().Message}",
             Severity = DiagnosticSeverity.Error,
             Source = MessageSource.Parser.ToString()
           });
@@ -181,7 +189,7 @@ namespace Microsoft.Dafny.LanguageServer.Workspace {
           logger.LogTrace($"Publish diagnostics called for URI {publishUri}");
           languageServer.TextDocument.PublishDiagnostics(new PublishDiagnosticsParams {
             Uri = publishUri,
-            Version = filesystem.GetVersion(publishUri),
+            Version = GetFileVersion(state, publishUri),
             Diagnostics = diagnostics,
           });
         }
@@ -201,42 +209,49 @@ namespace Microsoft.Dafny.LanguageServer.Workspace {
         return;
       }
 
-      bool verificationStarted = state.Status == CompilationStatus.ResolutionSucceeded;
+      try {
 
-      var errors = diagnosticsPerFile.GetOrDefault(uri, Enumerable.Empty<Diagnostic>).
-        Where(x => x.Severity == DiagnosticSeverity.Error && x.Source != MessageSource.Verifier.ToString()).ToList();
-      var tree = state.VerificationTrees.GetValueOrDefault(uri);
-      if (tree == null) {
-        return;
-      }
+        bool verificationStarted = state.Status == CompilationStatus.ResolutionSucceeded;
 
-      var linesCount = tree.Range.End.Line + 1;
-      var fileVersion = filesystem.GetVersion(uri);
-      if (linesCount == 0) {
-        return;
-      }
-
-      var verificationStatusGutter = VerificationStatusGutter.ComputeFrom(
-        DocumentUri.From(uri),
-        fileVersion,
-        tree.Children,
-        errors,
-        linesCount,
-        verificationStarted
-      );
-      if (logger.IsEnabled(LogLevel.Trace)) {
-        var icons = string.Join(' ', verificationStatusGutter.PerLineStatus.Select(s => LineVerificationStatusToString[s]));
-        logger.LogDebug($"Sending gutter icons for compilation {state.Input.Project.Uri}, comp version {state.Version}, file version {fileVersion}" +
-                        $"icons: {icons}\n" +
-                        $"stacktrace:\n{Environment.StackTrace}");
-      }
-
-      lock (previouslyPublishedIcons) {
-        var previous = previouslyPublishedIcons.GetValueOrDefault(uri);
-        if (previous == null || !previous.PerLineStatus.SequenceEqual(verificationStatusGutter.PerLineStatus)) {
-          previouslyPublishedIcons[uri] = verificationStatusGutter;
-          languageServer.TextDocument.SendNotification(verificationStatusGutter);
+        var errors = diagnosticsPerFile.GetOrDefault(uri, Enumerable.Empty<Diagnostic>).Where(x =>
+          x.Severity == DiagnosticSeverity.Error && x.Source != MessageSource.Verifier.ToString()).ToList();
+        var tree = state.VerificationTrees.GetValueOrDefault(uri);
+        if (tree == null) {
+          return;
         }
+
+        var linesCount = tree.Range.End.Line + 1;
+        var fileVersion = GetFileVersion(state, uri);
+        if (linesCount == 0) {
+          return;
+        }
+
+        var verificationStatusGutter = VerificationStatusGutter.ComputeFrom(
+          DocumentUri.From(uri),
+          fileVersion,
+          tree.Children.ToList(),
+          errors,
+          linesCount,
+          verificationStarted
+        );
+        if (logger.IsEnabled(LogLevel.Trace)) {
+          var icons = string.Join(' ',
+            verificationStatusGutter.PerLineStatus.Select(s => LineVerificationStatusToString[s]));
+          logger.LogDebug(
+            $"Sending gutter icons for compilation {state.Input.Project.Uri}, comp version {state.Version}, file version {fileVersion}" +
+            $"icons: {icons}\n" +
+            $"stacktrace:\n{Environment.StackTrace}");
+        }
+
+        lock (previouslyPublishedIcons) {
+          var previous = previouslyPublishedIcons.GetValueOrDefault(uri);
+          if (previous == null || !previous.PerLineStatus.SequenceEqual(verificationStatusGutter.PerLineStatus)) {
+            previouslyPublishedIcons[uri] = verificationStatusGutter;
+            languageServer.TextDocument.SendNotification(verificationStatusGutter);
+          }
+        }
+      } catch (Exception e) {
+        logger.LogError(e, "Exception while publishing gutter icons");
       }
     }
 

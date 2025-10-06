@@ -1,3 +1,4 @@
+#nullable enable
 using System.Collections.Generic;
 using System.Diagnostics.Contracts;
 using System.Linq;
@@ -5,17 +6,12 @@ using Microsoft.Dafny.Auditor;
 
 namespace Microsoft.Dafny;
 
-public abstract class MemberDecl : Declaration {
+public abstract class MemberDecl : Declaration, ISymbol {
   public abstract string WhatKind { get; }
   public string WhatKindAndName => $"{WhatKind} '{Name}'";
   public virtual string WhatKindMentionGhost => (IsGhost ? "ghost " : "") + WhatKind;
-  protected bool hasStaticKeyword;
-  public bool HasStaticKeyword => hasStaticKeyword;
-  public virtual bool IsStatic {
-    get {
-      return HasStaticKeyword || EnclosingClass is DefaultClassDecl;
-    }
-  }
+  public abstract bool HasStaticKeyword { get; }
+  public virtual bool IsStatic => HasStaticKeyword || EnclosingClass is DefaultClassDecl;
 
   public virtual bool IsOpaque => false;
 
@@ -42,9 +38,9 @@ public abstract class MemberDecl : Declaration {
   /// </summary>
   public bool IsInstanceIndependentConstant => this is ConstantField cf && cf.Rhs != null;
 
-  public TopLevelDecl EnclosingClass;  // filled in during resolution
-  [FilledInDuringResolution] public MemberDecl RefinementBase;  // filled in during the pre-resolution refinement transformation; null if the member is new here
-  [FilledInDuringResolution] public MemberDecl OverriddenMember;  // non-null if the member overrides a member in a parent trait
+  [FilledInDuringResolution] public TopLevelDecl EnclosingClass = null!;
+  [FilledInDuringResolution] public MemberDecl? RefinementBase;  // filled in during the pre-resolution refinement transformation; null if the member is new here
+  [FilledInDuringResolution] public MemberDecl? OverriddenMember;  // non-null if the member overrides a member in a parent trait
   public virtual bool IsOverrideThatAddsBody => OverriddenMember != null;
 
   /// <summary>
@@ -61,18 +57,18 @@ public abstract class MemberDecl : Declaration {
   }
 
   protected MemberDecl(Cloner cloner, MemberDecl original) : base(cloner, original) {
-    this.hasStaticKeyword = original.hasStaticKeyword;
     this.EnclosingClass = original.EnclosingClass;
     this.isGhost = original.isGhost;
   }
 
-  protected MemberDecl(RangeToken rangeToken, Name name, bool hasStaticKeyword, bool isGhost, Attributes attributes, bool isRefining)
-    : base(rangeToken, name, attributes, isRefining) {
-    Contract.Requires(rangeToken != null);
-    Contract.Requires(name != null);
-    this.hasStaticKeyword = hasStaticKeyword;
+  [SyntaxConstructor]
+  protected MemberDecl(IOrigin origin, Name nameNode, bool isGhost, Attributes? attributes)
+    : base(origin, nameNode, attributes) {
+    Contract.Requires(origin != null);
+    Contract.Requires(nameNode != null);
     this.isGhost = isGhost;
   }
+
   /// <summary>
   /// Returns className+"."+memberName.  Available only after resolution.
   /// </summary>
@@ -80,7 +76,7 @@ public abstract class MemberDecl : Declaration {
     get {
       Contract.Requires(EnclosingClass != null);
       Contract.Ensures(Contract.Result<string>() != null);
-      string n = EnclosingClass.FullDafnyName;
+      string n = EnclosingClass!.FullDafnyName;
       return (n.Length == 0 ? n : (n + ".")) + Name;
     }
   }
@@ -89,51 +85,49 @@ public abstract class MemberDecl : Declaration {
       Contract.Requires(EnclosingClass != null);
       Contract.Ensures(Contract.Result<string>() != null);
 
-      return EnclosingClass.FullName + "." + Name;
+      return EnclosingClass!.FullName + "." + Name;
     }
   }
 
   public override string SanitizedName =>
     (Name == EnclosingClass.Name ? "_" : "") + base.SanitizedName;
 
-  public override string GetCompileName(DafnyOptions options) => (Name == EnclosingClass.Name ? "_" : "") + base.GetCompileName(options);
+  public override string GetCompileName(DafnyOptions options) =>
+    (Name == EnclosingClass.Name ? "_" : "") + base.GetCompileName(options);
 
   public virtual string FullSanitizedName {
     get {
-      Contract.Requires(EnclosingClass != null);
       Contract.Ensures(Contract.Result<string>() != null);
 
       if (Name == "requires") {
-        return BoogieGenerator.Requires(((ArrowTypeDecl)EnclosingClass).Arity);
+        return BoogieGenerator.Requires(((ArrowTypeDecl)EnclosingClass!).Arity);
       } else if (Name == "reads") {
-        return BoogieGenerator.Reads(((ArrowTypeDecl)EnclosingClass).Arity);
+        return BoogieGenerator.Reads(((ArrowTypeDecl)EnclosingClass!).Arity);
       } else {
-        return EnclosingClass.FullSanitizedName + "." + SanitizedName;
+        return EnclosingClass!.FullSanitizedName + "." + SanitizedName;
       }
     }
   }
 
-  public virtual IEnumerable<Expression> SubExpressions => Enumerable.Empty<Expression>();
+  public virtual IEnumerable<Expression> SubExpressions => [];
 
   public override IEnumerable<Assumption> Assumptions(Declaration decl) {
     foreach (var a in base.Assumptions(this)) {
       yield return a;
     }
-    if (this.HasUserAttribute("only", out _)) {
-      yield return new Assumption(decl, tok, AssumptionDescription.MemberOnly);
+    if (Attributes.Find(this.Attributes, "only") != null) {
+      yield return new Assumption(decl, Origin, AssumptionDescription.MemberOnly);
     }
   }
 
-  public void RecursiveCallParameters(IToken tok, List<TypeParameter> typeParams, List<Formal> ins,
+  public void RecursiveCallParameters(IOrigin tok, List<TypeParameter> typeParams, List<Formal> ins,
     Expression receiverSubst, Dictionary<IVariable, Expression> substMap,
     out Expression receiver, out List<Expression> arguments) {
     Contract.Requires(tok != null);
     Contract.Requires(this != null);
     Contract.Requires(EnclosingClass is TopLevelDeclWithMembers);
     Contract.Requires(typeParams != null);
-    Contract.Requires(ins != null);
     // receiverSubst is allowed to be null
-    Contract.Requires(substMap != null);
     Contract.Ensures(Contract.ValueAtReturn(out receiver) != null);
     Contract.Ensures(Contract.ValueAtReturn(out arguments) != null);
 
@@ -146,13 +140,12 @@ public abstract class MemberDecl : Declaration {
       receiver.Type = ModuleResolver.GetReceiverType(tok, this);  // resolve here
     }
 
-    arguments = new List<Expression>();
+    arguments = [];
     foreach (var inFormal in ins) {
-      Expression inE;
-      if (substMap.TryGetValue(inFormal, out inE)) {
+      if (substMap.TryGetValue(inFormal, out var inE)) {
         arguments.Add(inE);
       } else {
-        var ie = new IdentifierExpr(inFormal.tok, inFormal.Name);
+        var ie = new IdentifierExpr(inFormal.Origin, inFormal.Name);
         ie.Var = inFormal;  // resolve here
         ie.Type = inFormal.Type;  // resolve here
         arguments.Add(ie);

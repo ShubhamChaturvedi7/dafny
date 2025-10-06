@@ -16,6 +16,13 @@ using Tomlyn.Model;
 namespace Microsoft.Dafny;
 
 public class DafnyProject : IEquatable<DafnyProject> {
+  public static Option<bool> FindProjectOption = new("--find-project",
+    "Uses the first specified input file as a starting path, from which to search for a project file by traversing up the file tree.");
+
+  static DafnyProject() {
+    OptionRegistry.RegisterOption(FindProjectOption, OptionScope.Cli);
+  }
+
   public const string Extension = ".toml";
   public const string FileName = "dfyconfig" + Extension;
 
@@ -23,6 +30,7 @@ public class DafnyProject : IEquatable<DafnyProject> {
 
   public BatchErrorReporter Errors { get; init; } = new(DafnyOptions.Default);
 
+  public int? Version { get; }
   public Uri Uri { get; set; }
 
   public Uri? Base { get; set; }
@@ -31,16 +39,17 @@ public class DafnyProject : IEquatable<DafnyProject> {
   public ISet<string> Excludes { get; }
   public IDictionary<string, object> Options { get; }
 
-  public bool UsesProjectFile => Path.GetFileName(Uri.LocalPath) == FileName;
+  public bool UsesProjectFile => Path.GetFileName(Uri.LocalPath).EndsWith(FileName);
   public bool ImplicitFromCli;
 
-  public IToken StartingToken => ImplicitFromCli ? Token.Cli : new Token {
+  public IOrigin StartingToken => ImplicitFromCli ? Token.Cli : new Token {
     Uri = Uri,
     line = 1,
     col = 1
   };
 
-  public DafnyProject(Uri uri, Uri? @base, ISet<string> includes, ISet<string>? excludes = null, IDictionary<string, object>? options = null) {
+  public DafnyProject(int? version, Uri uri, Uri? @base, ISet<string> includes, ISet<string>? excludes = null, IDictionary<string, object>? options = null) {
+    Version = version;
     Uri = uri;
     Base = @base;
     Includes = includes;
@@ -48,83 +57,90 @@ public class DafnyProject : IEquatable<DafnyProject> {
     Options = options ?? new Dictionary<string, object>();
   }
 
-  public static async Task<DafnyProject> Open(IFileSystem fileSystem, DafnyOptions dafnyOptions, Uri uri, bool defaultIncludes = true) {
-
-    var emptyProject = new DafnyProject(uri, null, new HashSet<string>(), new HashSet<string>(),
-      new Dictionary<string, object>());
-
+  public static async Task<DafnyProject> Open(IFileSystem fileSystem, Uri uri, IOrigin uriOrigin,
+    bool defaultIncludes = true, bool serverNameCheck = true) {
     DafnyProject result;
     try {
-      using var textReader = fileSystem.ReadFile(uri);
+      var fileSnapshot = fileSystem.ReadFile(uri);
+      using var textReader = fileSnapshot.Reader;
       var text = await textReader.ReadToEndAsync();
-      var model = Toml.ToModel<DafnyProjectFile>(text, null, new TomlModelOptions());
-      var directory = Path.GetDirectoryName(uri.LocalPath)!;
+      try {
+        var model = Toml.ToModel<DafnyProjectFile>(text, null, new TomlModelOptions());
+        var directory = Path.GetDirectoryName(uri.LocalPath)!;
 
-      result = new DafnyProject(uri, model.Base == null ? null : new Uri(Path.GetFullPath(model.Base, directory!)),
-        model.Includes?.Select(p => Path.GetFullPath(p, directory)).ToHashSet() ?? new HashSet<string>(),
-        model.Excludes?.Select(p => Path.GetFullPath(p, directory)).ToHashSet() ?? new HashSet<string>(),
-        model.Options ?? new Dictionary<string, object>());
+        result = new DafnyProject(fileSnapshot.Version, uri, model.Base == null ? null : new Uri(Path.GetFullPath(model.Base, directory!)),
+          model.Includes?.Select(p => Path.GetFullPath(p, directory)).ToHashSet() ?? [],
+          model.Excludes?.Select(p => Path.GetFullPath(p, directory)).ToHashSet() ?? [],
+          model.Options ?? new Dictionary<string, object>());
 
-      if (result.Base != null) {
-        var baseProject = await Open(fileSystem, dafnyOptions, result.Base, false);
-        baseProject.Errors.CopyDiagnostics(result.Errors);
-        foreach (var include in baseProject.Includes) {
-          if (!result.Excludes.Contains(include)) {
-            result.Includes.Add(include);
+        if (result.Base != null) {
+          var baseProject = await Open(fileSystem, result.Base, new Token {
+            Uri = uri,
+            line = 1,
+            col = 1
+          }, false, false);
+          baseProject.Errors.CopyDiagnostics(result.Errors);
+          foreach (var include in baseProject.Includes) {
+            if (!result.Excludes.Contains(include)) {
+              result.Includes.Add(include);
+            }
+          }
+
+          foreach (var include in baseProject.Excludes) {
+            if (!result.Includes.Contains(include)) {
+              result.Excludes.Add(include);
+            }
+          }
+
+          foreach (var option in baseProject.Options) {
+            if (!result.Options.ContainsKey(option.Key)) {
+              result.Options.Add(option.Key, option.Value);
+            }
           }
         }
-
-        foreach (var include in baseProject.Excludes) {
-          if (!result.Includes.Contains(include)) {
-            result.Excludes.Add(include);
-          }
+        if (defaultIncludes && model.Includes == null && !result.Includes.Any()) {
+          result.Includes.Add("**/*.dfy");
         }
-
-        foreach (var option in baseProject.Options) {
-          if (!result.Options.ContainsKey(option.Key)) {
-            result.Options.Add(option.Key, option.Value);
-          }
-        }
-      }
-      if (defaultIncludes && model.Includes == null && !result.Includes.Any()) {
-        result.Includes.Add("**/*.dfy");
-      }
-    } catch (IOException e) {
-      result = emptyProject;
-      result.Errors.Error(MessageSource.Project, result.StartingToken, e.Message);
-    } catch (TomlException tomlException) {
-      var propertyNotFoundRegex = new Regex(
-        @$"\((\d+),(\d+)\) : error : The property `(\w+)` was not found on object type {typeof(DafnyProject).FullName}");
-      var propertyNotFoundMatch = propertyNotFoundRegex.Match(tomlException.Message);
-      if (propertyNotFoundMatch.Success) {
-        var line = int.Parse(propertyNotFoundMatch.Groups[1].Value);
-        var column = int.Parse(propertyNotFoundMatch.Groups[2].Value);
-        var property = propertyNotFoundMatch.Groups[3].Value;
-        result = emptyProject;
-        var token = new Token(line, column) {
-          Uri = uri
-        };
-        result.Errors.Error(MessageSource.Project, token,
-          $"Dafny project files do not have the property {property}");
-      } else {
-        var genericRegex = new Regex(@$"\((\d+),(\d+)\) : error : (.*)");
-        var genericMatch = genericRegex.Match(tomlException.Message);
-        if (genericMatch.Success) {
-          var line = int.Parse(genericMatch.Groups[1].Value);
-          var column = int.Parse(genericMatch.Groups[2].Value);
-          var message = genericMatch.Groups[3].Value;
-          result = emptyProject;
+      } catch (TomlException tomlException) {
+        var propertyNotFoundRegex = new Regex(
+          @$"\((\d+),(\d+)\) : error : The property `(\w+)` was not found on object type {typeof(DafnyProject).FullName}");
+        var propertyNotFoundMatch = propertyNotFoundRegex.Match(tomlException.Message);
+        if (propertyNotFoundMatch.Success) {
+          var line = int.Parse(propertyNotFoundMatch.Groups[1].Value);
+          var column = int.Parse(propertyNotFoundMatch.Groups[2].Value);
+          var property = propertyNotFoundMatch.Groups[3].Value;
+          result = new DafnyProject(fileSnapshot.Version, uri, null, new HashSet<string>(), new HashSet<string>(),
+            new Dictionary<string, object>());
           var token = new Token(line, column) {
             Uri = uri
           };
-          result.Errors.Error(MessageSource.Project, token, message);
+          result.Errors.Error(MessageSource.Project, token,
+            $"Dafny project files do not have the property {property}");
         } else {
-          throw new Exception("Could not parse Tomlyn error");
+          var genericRegex = new Regex(@$"\((\d+),(\d+)\) : error : (.*)");
+          var genericMatch = genericRegex.Match(tomlException.Message);
+          if (genericMatch.Success) {
+            var line = int.Parse(genericMatch.Groups[1].Value);
+            var column = int.Parse(genericMatch.Groups[2].Value);
+            var message = genericMatch.Groups[3].Value;
+            result = new DafnyProject(fileSnapshot.Version, uri, null, new HashSet<string>(), new HashSet<string>(),
+              new Dictionary<string, object>());
+            var token = new Token(line, column) {
+              Uri = uri
+            };
+            result.Errors.Error(MessageSource.Project, token, message);
+          } else {
+            throw new Exception("Could not parse Tomlyn error");
+          }
         }
       }
+    } catch (IOException e) {
+      result = new DafnyProject(null, uri, null, new HashSet<string>(), new HashSet<string>(),
+        new Dictionary<string, object>());
+      result.Errors.Error(MessageSource.Project, uriOrigin, e.Message);
     }
 
-    if (Path.GetFileName(uri.LocalPath) != FileName) {
+    if (serverNameCheck && Path.GetFileName(uri.LocalPath) != FileName) {
       result.Errors.Warning(MessageSource.Project, "", result.StartingToken, $"only Dafny project files named {FileName} are recognised by the Dafny IDE.");
     }
 
@@ -197,11 +213,11 @@ public class DafnyProject : IEquatable<DafnyProject> {
     return commonPrefix;
   }
 
-  public void Validate(TextWriter outputWriter, IEnumerable<Option> possibleOptions) {
+  public async Task Validate(IDafnyOutputWriter outputWriter, IEnumerable<Option> possibleOptions) {
 
     var possibleNames = possibleOptions.Select(o => o.Name).ToHashSet();
     foreach (var optionThatDoesNotExist in Options.Where(option => !possibleNames.Contains(option.Key))) {
-      outputWriter.WriteLine(
+      await outputWriter.Status(
         $"Warning: option '{optionThatDoesNotExist.Key}' that was specified in the project file, is not a valid Dafny option.");
     }
   }
@@ -212,7 +228,7 @@ public class DafnyProject : IEquatable<DafnyProject> {
       return false;
     }
 
-    var printTomlValue = PrintTomlOptionToCliValue(tomlValue, option);
+    var printTomlValue = PrintTomlOptionToCliValue(Uri, tomlValue, option);
     var parseResult = option.Parse(printTomlValue.ToArray());
     if (parseResult.Errors.Any()) {
       Errors.Error(MessageSource.Project, StartingToken, $"could not parse value '{tomlValue}' for option '{option.Name}' that has type '{option.ValueType.Name}'");
@@ -225,8 +241,8 @@ public class DafnyProject : IEquatable<DafnyProject> {
     return true;
   }
 
-  IEnumerable<string> PrintTomlOptionToCliValue(object value, Option valueType) {
-    var projectDirectory = Path.GetDirectoryName(Uri.LocalPath)!;
+  public static IEnumerable<string> PrintTomlOptionToCliValue(Uri uri, object value, Option valueType) {
+    var projectDirectory = Path.GetDirectoryName(uri.LocalPath)!;
 
     if (value is TomlArray array) {
       List<string> elements;

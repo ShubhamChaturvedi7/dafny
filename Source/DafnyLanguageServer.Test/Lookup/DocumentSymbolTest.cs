@@ -13,6 +13,52 @@ namespace Microsoft.Dafny.LanguageServer.IntegrationTest.Lookup {
   public class DocumentSymbolTest : ClientBasedLanguageServerTest {
 
     [Fact]
+    public async Task BadReturnSyntax() {
+      var source = @"method FindZero(a: array<int>) returns (index)  // note lack of type annotation";
+      var documentItem = CreateAndOpenTestDocument(source);
+      var symbols = (await RequestDocumentSymbol(documentItem)).ToList();
+      CheckValidSymbols(symbols);
+    }
+
+    private void CheckValidSymbols(IEnumerable<DocumentSymbol> symbols) {
+      foreach (var symbol in symbols) {
+        CheckValidRange(symbol.SelectionRange);
+        CheckValidRange(symbol.Range);
+        CheckValidSymbols(symbol.Children);
+      }
+    }
+
+    private void CheckValidRange(Range range) {
+      ValidPosition(range.Start);
+      ValidPosition(range.End);
+    }
+
+    private void ValidPosition(Position position) {
+      Assert.True(position.Line >= 0 && position.Character >= 0);
+    }
+
+    [Fact]
+    public async Task ExportImport() {
+      var source = @"
+module Low {
+  const x := 3
+}
+
+module High {
+  import Low
+
+  export
+    provides
+      Low
+}
+".TrimStart();
+
+      var documentItem = CreateAndOpenTestDocument(source);
+      var symbols = (await RequestDocumentSymbol(documentItem)).ToList();
+      Assert.Equal(2, symbols.Count);
+    }
+
+    [Fact]
     public async Task NamelessClass() {
       var source = @"class {
   function Foo(): int
@@ -64,7 +110,7 @@ namespace Microsoft.Dafny.LanguageServer.IntegrationTest.Lookup {
 
     [Fact]
     public async Task CanResolveSymbolsForMultiFileProjects() {
-      var temp = Path.GetTempPath();
+      var temp = GetFreshTempPath();
       await CreateOpenAndWaitForResolve("", Path.Combine(temp, DafnyProject.FileName));
       var file1 = CreateAndOpenTestDocument("method Foo() {}", Path.Combine(temp, "file1.dfy"));
       var file2 = CreateAndOpenTestDocument("method Bar() {}", Path.Combine(temp, "file2.dfy"));

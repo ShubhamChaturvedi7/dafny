@@ -214,13 +214,14 @@ module SomeModule {
       using (var engine = ExecutionEngine.CreateWithoutSharedCache(options)) {
         foreach (var boogieProgram in boogiePrograms) {
           var (outcome, _) = await DafnyMain.BoogieOnce(new ErrorReporterSink(options),
-            options, options.OutputWriter, engine, "", "", boogieProgram, "programId");
+            options, new StringWriter(), engine, "", "", boogieProgram, "programId");
           testOutputHelper.WriteLine("outcome: " + outcome);
         }
       }
       foreach (var proverFile in Directory.GetFiles(directory)) {
         yield return await File.ReadAllTextAsync(proverFile);
       }
+      Directory.Delete(directory, true);
     }
 
     ISet<string> UniqueNonCommentLines(string input) {

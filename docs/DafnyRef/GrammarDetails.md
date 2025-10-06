@@ -129,7 +129,10 @@ digits = digit {["_"] digit}
 
 hexdigits = "0x" hexdigit {["_"] hexdigit}
 
-decimaldigits = digit {["_"] digit} '.' digit {["_"] digit}
+realnumber = digit {["_"] digit}
+             ( '.' digit {["_"] digit} ['e' ['-'] digit {["_"] digit}]
+             | 'e' ['-'] digit {["_"] digit}
+             )
 
 escapedChar =
     ( "\'" | "\"" | "\\" | "\0" | "\n" | "\r" | "\t"
@@ -1142,6 +1145,19 @@ CalcOp =
   )
 ````
 
+#### 17.2.6.24. Opaque block {#g-opaque-block}
+
+([discussion](#sec-opaque-block))
+
+````grammar
+OpaqueBlock = "opaque" OpaqueSpec BlockStmt
+  
+OpaqueSpec = {
+  | ModifiesClause(allowLambda: false)
+  | EnsuresClause(allowLambda: false)
+}
+````
+
 ### 17.2.7. Expressions
 
 #### 17.2.7.1. Top-level expression {#g-top-level-expression}
@@ -1401,7 +1417,7 @@ LiteralExpression =
 
 Nat = ( digits | hexdigits )
 
-Dec = decimaldigits
+Dec = ( realnumber | digits "." | "." ( digits | realnumber ) )
 ````
 
 #### 17.2.7.21. This expression {#g-this-expression}
@@ -1618,7 +1634,7 @@ MapComprehensionExpr(allowLemma, allowLambda) =
 
 ````grammar
 StmtInExpr = ( AssertStmt | AssumeStmt | ExpectStmt
-             | RevealStmt | CalcStmt
+             | RevealStmt | CalcStmt | ForallStmt
              )
 ````
 

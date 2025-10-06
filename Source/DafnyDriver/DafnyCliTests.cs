@@ -8,7 +8,16 @@ public static class DafnyCliTests {
   // Environment variables that the CLI directly or indirectly (through target language tools) reads.
   // This is defined for the benefit of testing infrastructure to ensure that they are maintained
   // through separate processes.
-  public static readonly string[] ReferencedEnvironmentVariables = { "PATH", "HOME", "DOTNET_NOLOGO" };
+  public static readonly string[] ReferencedEnvironmentVariables = [
+    "PATH",
+    "HOME",
+    "DOTNET_NOLOGO",
+    "DAFNY_INTEGRATION_TESTS_IN_PROCESS",
+    "DAFNY_INTEGRATION_TESTS_MODE",
+    "DAFNY_INTEGRATION_TESTS_ONLY_COMPILERS",
+    "DAFNY_INTEGRATION_TESTS_UPDATE_EXPECT_FILE",
+    "DAFNY_INTEGRATION_TESTS_ROOT_DIR"
+  ];
 
   static DafnyCliTests() {
     if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
@@ -32,7 +41,7 @@ public static class DafnyCliTests {
     }
   }
 
-  public static readonly string[] DefaultArgumentsForTesting = new[] {
+  public static readonly string[] DefaultArgumentsForTesting = [
     // Try to verify 2 verification conditions at once
     "/vcsCores:2",
 
@@ -52,9 +61,14 @@ public static class DafnyCliTests {
 
     // test results do not include source code snippets
     "/showSnippets:0"
-  };
+  ];
 
-  public static readonly string[] NewDefaultArgumentsForTesting = new[] {
+  public static readonly string[] NewDefaultArgumentsForTesting = [
+    // Use the new resolver
+    "--type-system-refresh",
+    "--general-traits=datatype",
+    "--general-newtypes",
+
     // Try to verify 2 verification conditions at once
     "--cores=2",
 
@@ -70,5 +84,5 @@ public static class DafnyCliTests {
 
     // test results do not include source code snippets
     "--show-snippets:false"
-  };
+  ];
 }

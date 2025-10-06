@@ -112,6 +112,9 @@ public abstract class IExecutableBackend {
   protected ErrorReporter? Reporter;
   protected ReadOnlyCollection<string>? OtherFileNames;
 
+  // The following lists are the Options supported by the backend.
+  public virtual IEnumerable<Option> SupportedOptions => new List<Option>();
+
   protected IExecutableBackend(DafnyOptions options) {
     Options = options;
   }
@@ -132,7 +135,7 @@ public abstract class IExecutableBackend {
   /// <summary>
   /// Perform any required processing after generating code with <c>Compile</c> and <c>EmitCallToMain</c>.
   /// </summary>
-  public abstract Task<bool> OnPostGenerate(string dafnyProgramName, string targetDirectory, TextWriter outputWriter);
+  public abstract Task<bool> OnPostGenerate(string dafnyProgramName, string targetDirectory, IDafnyOutputWriter outputWriter);
 
   /// <summary>
   /// Remove previously generated source files.  This is only applicable to compilers that put sources in a separate
@@ -168,7 +171,7 @@ public abstract class IExecutableBackend {
   public abstract Task<(bool Success, object CompilationResult)> CompileTargetProgram(string dafnyProgramName,
     string targetProgramText, string callToMain,
     string targetFilename,
-    ReadOnlyCollection<string> otherFileNames, bool runAfterCompile, TextWriter outputWriter);
+    ReadOnlyCollection<string> otherFileNames, bool runAfterCompile, IDafnyOutputWriter outputWriter);
 
   /// <summary>
   /// Runs a target program after it has been successfully compiled.
@@ -180,8 +183,8 @@ public abstract class IExecutableBackend {
   /// </summary>
   public abstract Task<bool> RunTargetProgram(string dafnyProgramName, string targetProgramText, string callToMain,
     string pathsFilename,
-    ReadOnlyCollection<string> otherFileNames, object compilationResult, TextWriter outputWriter,
-    TextWriter errorWriter);
+    ReadOnlyCollection<string> otherFileNames, object compilationResult,
+    IDafnyOutputWriter outputWriter);
 
   /// <summary>
   /// Instruments the underlying SinglePassCompiler, if it exists.
@@ -202,18 +205,18 @@ Where to output the translation record file. Defaults to the output directory. S
   };
 
   static IExecutableBackend() {
-    DooFile.RegisterNoChecksNeeded(OuterModule, false);
-    DooFile.RegisterNoChecksNeeded(TranslationRecords, false);
-    DooFile.RegisterNoChecksNeeded(TranslationRecordOutput, false);
-    TranslationRecord.RegisterLibraryChecks(
-      new Dictionary<Option, OptionCompatibility.OptionCheck> {
-        { OuterModule, OptionCompatibility.NoOpOptionCheck },
-      }
-    );
+    OptionRegistry.RegisterOption(OuterModule, OptionScope.Cli);
+    OptionRegistry.RegisterOption(TranslationRecords, OptionScope.Cli);
+    OptionRegistry.RegisterOption(TranslationRecordOutput, OptionScope.Cli);
+    OptionRegistry.RegisterOption(OuterModule, OptionScope.Translation);
   }
 
   public virtual Command GetCommand() {
-    return new Command(TargetId, $"Translate Dafny sources to {TargetName} source and build files.");
+    var cmd = new Command(TargetId, $"Translate Dafny sources to {TargetName} source and build files.");
+    foreach (var supportedOption in SupportedOptions) {
+      cmd.AddOption(supportedOption);
+    }
+    return cmd;
   }
 
   public virtual void PopulateCoverageReport(CoverageReport coverageReport) {

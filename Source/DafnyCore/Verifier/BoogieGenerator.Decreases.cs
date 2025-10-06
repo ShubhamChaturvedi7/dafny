@@ -32,15 +32,16 @@ public partial class BoogieGenerator {
   /// the check is:
   ///     allowance || (calleeDecreases LESS contextDecreases).
   /// </summary>
-  void CheckCallTermination(IToken tok, List<Expression> contextDecreases, List<Expression> calleeDecreases,
+  void CheckCallTermination(IOrigin tok, List<Expression> contextDecreases, List<Expression> calleeDecreases,
                             Expression allowance,
                             Expression receiverReplacement, Dictionary<IVariable, Expression> substMap,
+                            Dictionary<IVariable, Expression> directSubstMap,
                             Dictionary<TypeParameter, Type> typeMap,
                             ExpressionTranslator etranCurrent, bool oldCaller, BoogieStmtListBuilder builder, bool inferredDecreases, string hint) {
     Contract.Requires(tok != null);
-    Contract.Requires(cce.NonNullElements(contextDecreases));
-    Contract.Requires(cce.NonNullElements(calleeDecreases));
-    Contract.Requires(cce.NonNullDictionaryAndValues(substMap));
+    Contract.Requires(Cce.NonNullElements(contextDecreases));
+    Contract.Requires(Cce.NonNullElements(calleeDecreases));
+    Contract.Requires(Cce.NonNullDictionaryAndValues(substMap));
     Contract.Requires(etranCurrent != null);
     Contract.Requires(builder != null);
 
@@ -56,22 +57,22 @@ public partial class BoogieGenerator {
     }
 
     int N = Math.Min(contextDecreases.Count, calleeDecreases.Count);
-    var toks = new List<IToken>();
-    var types0 = new List<Type>();
-    var types1 = new List<Type>();
+    var toks = new List<IOrigin>();
     var callee = new List<Expr>();
     var caller = new List<Expr>();
     var oldExpressions = new List<Expression>();
     var newExpressions = new List<Expression>();
-    if (RefinementToken.IsInherited(tok, currentModule) && contextDecreases.All(e => !RefinementToken.IsInherited(e.tok, currentModule))) {
+    Bpl.Expr canCalls = Bpl.Expr.True;
+    if (tok.IsInherited(currentModule) && contextDecreases.All(e => !e.Origin.IsInherited(currentModule))) {
       // the call site is inherited but all the context decreases expressions are new
-      tok = new ForceCheckToken(tok);
+      tok = new ForceCheckOrigin(tok);
     }
     for (int i = 0; i < N; i++) {
       Expression e0 = Substitute(calleeDecreases[i], receiverReplacement, substMap, typeMap);
+      Expression e0direct = Substitute(calleeDecreases[i], receiverReplacement, directSubstMap, typeMap);
       Expression e1 = contextDecreases[i];
       if (oldCaller) {
-        e1 = new OldExpr(e1.tok, e1) {
+        e1 = new OldExpr(e1.Origin, e1) {
           Type = e1.Type // To ensure that e1 stays resolved
         };
       }
@@ -80,21 +81,22 @@ public partial class BoogieGenerator {
         break;
       }
       oldExpressions.Add(e1);
-      newExpressions.Add(e0);
-      toks.Add(new NestedToken(tok, e1.tok));
-      types0.Add(e0.Type.NormalizeExpand());
-      types1.Add(e1.Type.NormalizeExpand());
+      newExpressions.Add(e0direct);
+      toks.Add(new NestedOrigin(tok, e1.Origin, "this decreases clause was not satisfied"));
+      canCalls = BplAnd(canCalls, etranCurrent.CanCallAssumption(e1));
+      canCalls = BplAnd(canCalls, etranCurrent.CanCallAssumption(e0direct));
       callee.Add(etranCurrent.TrExpr(e0));
       caller.Add(etranCurrent.TrExpr(e1));
     }
     bool endsWithWinningTopComparison = N == contextDecreases.Count && N < calleeDecreases.Count;
-    Bpl.Expr decrExpr = DecreasesCheck(toks, types0, types1, callee, caller, builder, "", endsWithWinningTopComparison, false);
+    builder.Add(TrAssumeCmd(tok, canCalls));
+    Bpl.Expr decrExpr = DecreasesCheck(toks, null, newExpressions, oldExpressions, callee, caller, builder, "", endsWithWinningTopComparison, false);
     if (allowance != null) {
       decrExpr = BplOr(etranCurrent.TrExpr(allowance), decrExpr);
     }
     builder.Add(Assert(tok, decrExpr, new
-      PODesc.Terminates(inferredDecreases, null, allowance,
-                        oldExpressions, newExpressions, hint)));
+      Terminates(inferredDecreases, null, allowance,
+                        oldExpressions, newExpressions, endsWithWinningTopComparison, hint), builder.Context));
   }
 
   /// <summary>
@@ -104,28 +106,38 @@ public partial class BoogieGenerator {
   /// If builder is non-null, then the check '0 ATMOST decr' is generated to builder.
   /// Requires all types in types0 and types1 to be non-proxy non-synonym types (that is, callers should invoke NormalizeExpand)
   /// </summary>
-  Bpl.Expr DecreasesCheck(List<IToken> toks, List<Type> types0, List<Type> types1, List<Bpl.Expr> ee0, List<Bpl.Expr> ee1,
+  Bpl.Expr DecreasesCheck(List<IOrigin> toks, List<VarDeclStmt> prevGhostLocals,
+                          List<Expression> dafny0, List<Expression> dafny1, List<Bpl.Expr> ee0, List<Bpl.Expr> ee1,
                           BoogieStmtListBuilder builder, string suffixMsg, bool allowNoChange, bool includeLowerBound) {
-    Contract.Requires(cce.NonNullElements(toks));
-    Contract.Requires(cce.NonNullElements(types0));
-    Contract.Requires(cce.NonNullElements(types1));
-    Contract.Requires(cce.NonNullElements(ee0));
-    Contract.Requires(cce.NonNullElements(ee1));
-    Contract.Requires(predef != null);
-    Contract.Requires(types0.Count == types1.Count && types0.Count == ee0.Count && ee0.Count == ee1.Count);
+    Contract.Requires(Cce.NonNullElements(toks));
+    Contract.Requires(Cce.NonNullElements(dafny0));
+    Contract.Requires(Cce.NonNullElements(dafny1));
+    Contract.Requires(Cce.NonNullElements(ee0));
+    Contract.Requires(Cce.NonNullElements(ee1));
+    Contract.Requires(Predef != null);
+    Contract.Requires(dafny0.Count == dafny1.Count && dafny0.Count == ee0.Count && ee0.Count == ee1.Count);
     Contract.Requires(builder == null || suffixMsg != null);
     Contract.Ensures(Contract.Result<Bpl.Expr>() != null);
 
-    int N = types0.Count;
+    int N = dafny0.Count;
 
     // compute eq and less for each component of the lexicographic tuple
     List<Bpl.Expr> Eq = new List<Bpl.Expr>(N);
     List<Bpl.Expr> Less = new List<Bpl.Expr>(N);
+    List<Expression> EqDafny = new List<Expression>(N);
+    List<Expression> LessDafny = new List<Expression>(N);
     for (int i = 0; i < N; i++) {
       Bpl.Expr less, atmost, eq;
-      ComputeLessEq(toks[i], types0[i], types1[i], ee0[i], ee1[i], out less, out atmost, out eq, includeLowerBound);
+      var ty0 = dafny0[i].Type.NormalizeExpandKeepConstraints();
+      var ty1 = dafny1[i].Type.NormalizeExpandKeepConstraints();
+      ComputeLessEq(toks[i], ty0, ty1, ee0[i], ee1[i], out less, out atmost, out eq, includeLowerBound);
       Eq.Add(eq);
+      EqDafny.Add(Expression.CreateEq(dafny0[i], dafny1[i], dafny0[i].Type.NormalizeExpand()));
       Less.Add(allowNoChange ? atmost : less);
+      LessDafny.Add(
+        allowNoChange
+          ? Expression.CreateAtMost(dafny0[i], dafny1[i])
+          : Expression.CreateLess(dafny0[i], dafny1[i]));
     }
     if (builder != null) {
       // check: 0 <= ee1
@@ -139,20 +151,28 @@ public partial class BoogieGenerator {
         };
 
         Bpl.Expr zero = null;
+        Expression dafnyZero = null;
         string zeroStr = null;
-        if (types0[k].IsNumericBased(Type.NumericPersuasion.Int)) {
+        if (dafny0[k].Type.NormalizeExpandKeepConstraints().IsNumericBased(Type.NumericPersuasion.Int)) {
           zero = Bpl.Expr.Literal(0);
+          dafnyZero = Expression.CreateIntLiteral(dafny0[k].Origin, 0);
           zeroStr = "0";
-        } else if (types0[k].IsNumericBased(Type.NumericPersuasion.Real)) {
+        } else if (dafny0[k].Type.NormalizeExpandKeepConstraints().IsNumericBased(Type.NumericPersuasion.Real)) {
           zero = Bpl.Expr.Literal(BaseTypes.BigDec.ZERO);
+          dafnyZero = Expression.CreateRealLiteral(dafny0[k].Origin, BigDec.ZERO);
           zeroStr = "0.0";
         }
         if (zero != null) {
           Bpl.Expr bounded = Bpl.Expr.Le(zero, ee1[k]);
+          Expression boundedDafny = Expression.CreateAtMost(dafnyZero, dafny1[k]);
           for (int i = 0; i < k; i++) {
             bounded = BplOr(bounded, Less[i]);
+            boundedDafny = Expression.CreateOr(boundedDafny, LessDafny[i]);
           }
-          Bpl.Cmd cmd = Assert(toks[k], BplOr(bounded, Eq[k]), new PODesc.DecreasesBoundedBelow(N, k, zeroStr, suffixMsg));
+
+          Expression dafnyBound = Expression.CreateOr(boundedDafny, EqDafny[k]);
+          Bpl.Cmd cmd = Assert(toks[k], BplOr(bounded, Eq[k]),
+            new DecreasesBoundedBelow(N, k, zeroStr, prevGhostLocals, dafnyBound, suffixMsg), builder.Context);
           builder.Add(cmd);
         }
       }
@@ -173,7 +193,7 @@ public partial class BoogieGenerator {
     return decrCheck;
   }
 
-  bool CompatibleDecreasesTypes(Type t, Type u) {
+  static bool CompatibleDecreasesTypes(Type t, Type u) {
     Contract.Requires(t != null);
     Contract.Requires(u != null);
     t = t.NormalizeToAncestorType();
@@ -224,13 +244,13 @@ public partial class BoogieGenerator {
     }
   }
 
-  void ComputeLessEq(IToken tok, Type ty0, Type ty1, Bpl.Expr e0, Bpl.Expr e1, out Bpl.Expr less, out Bpl.Expr atmost, out Bpl.Expr eq, bool includeLowerBound) {
+  void ComputeLessEq(IOrigin tok, Type ty0, Type ty1, Bpl.Expr e0, Bpl.Expr e1, out Bpl.Expr less, out Bpl.Expr atmost, out Bpl.Expr eq, bool includeLowerBound) {
     Contract.Requires(tok != null);
     Contract.Requires(ty0 != null);
     Contract.Requires(ty1 != null);
     Contract.Requires(e0 != null);
     Contract.Requires(e1 != null);
-    Contract.Requires(predef != null);
+    Contract.Requires(Predef != null);
     Contract.Ensures(Contract.ValueAtReturn(out less) != null);
     Contract.Ensures(Contract.ValueAtReturn(out atmost) != null);
     Contract.Ensures(Contract.ValueAtReturn(out eq) != null);
@@ -267,7 +287,7 @@ public partial class BoogieGenerator {
         b0 = FunctionCall(tok, BuiltinFunction.DtRank, null, e0);
         b1 = FunctionCall(tok, BuiltinFunction.DtRank, null, e1);
       } else {
-        Contract.Assert(false); throw new cce.UnreachableException();
+        Contract.Assert(false); throw new Cce.UnreachableException();
       }
       eq = Bpl.Expr.Eq(b0, b1);
       less = Bpl.Expr.Lt(b0, b1);
@@ -291,18 +311,18 @@ public partial class BoogieGenerator {
       less = Bpl.Expr.Gt(e0, e1);
       atmost = Bpl.Expr.Ge(e0, e1);
 
-    } else if ((ty0 is SetType && ((SetType)ty0).Finite) || (ty0 is MapType && ((MapType)ty0).Finite)) {
+    } else if (ty0 is SetType { Finite: true } || ty0 is MapType { Finite: true }) {
       Bpl.Expr b0, b1;
       if (ty0 is SetType) {
         b0 = e0;
         b1 = e1;
       } else {
         // for maps, compare their domains as sets
-        b0 = FunctionCall(tok, BuiltinFunction.MapDomain, predef.MapType, e0);
-        b1 = FunctionCall(tok, BuiltinFunction.MapDomain, predef.MapType, e1);
+        b0 = FunctionCall(tok, BuiltinFunction.MapDomain, Predef.MapType, e0);
+        b1 = FunctionCall(tok, BuiltinFunction.MapDomain, Predef.MapType, e1);
       }
       eq = FunctionCall(tok, BuiltinFunction.SetEqual, null, b0, b1);
-      less = ProperSubset(tok, b0, b1);
+      less = ProperSubset(tok, b0, b1, true);
       atmost = FunctionCall(tok, BuiltinFunction.SetSubset, null, b0, b1);
 
     } else if (ty0 is SetType || ty0 is MapType) {
@@ -314,8 +334,8 @@ public partial class BoogieGenerator {
       } else {
         Contract.Assert(!((MapType)ty0).Finite);
         // for maps, compare their domains as sets
-        b0 = FunctionCall(tok, BuiltinFunction.IMapDomain, predef.MapType, e0);
-        b1 = FunctionCall(tok, BuiltinFunction.IMapDomain, predef.MapType, e1);
+        b0 = FunctionCall(tok, BuiltinFunction.IMapDomain, Predef.MapType, e0);
+        b1 = FunctionCall(tok, BuiltinFunction.IMapDomain, Predef.MapType, e1);
       }
       eq = FunctionCall(tok, BuiltinFunction.ISetEqual, null, b0, b1);
       less = Bpl.Expr.False;
@@ -350,11 +370,14 @@ public partial class BoogieGenerator {
     } else {
       // reference type
       Contract.Assert(ty0.IsRefType);  // otherwise, unexpected type
-      var b0 = Bpl.Expr.Neq(e0, predef.Null);
-      var b1 = Bpl.Expr.Neq(e1, predef.Null);
+      var b0 = Bpl.Expr.Neq(e0, Predef.Null);
+      var b1 = Bpl.Expr.Neq(e1, Predef.Null);
       eq = BplIff(b0, b1);
       less = BplAnd(Bpl.Expr.Not(b0), b1);
       atmost = BplImp(b0, b1);
     }
+
+    less.tok = tok;
+    atmost.tok = tok;
   }
 }

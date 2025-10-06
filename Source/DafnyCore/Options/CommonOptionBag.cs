@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.IO;
@@ -5,6 +6,7 @@ using System.Linq;
 using DafnyCore;
 using DafnyCore.Options;
 using Serilog.Events;
+using Microsoft.Dafny.Compilers;
 
 namespace Microsoft.Dafny;
 
@@ -12,8 +14,30 @@ public class CommonOptionBag {
 
   public static void EnsureStaticConstructorHasRun() { }
 
-  public static readonly Option<bool> ProgressOption =
-    new("--progress", "While verifying, output information that helps track progress") {
+  public static readonly Option<bool> CheckSourceLocationConsistency =
+    new("--check-source-location-consistency", "Check that parent nodes contain their children") {
+      IsHidden = true
+    };
+
+  public enum ProgressLevel { None, Symbol, Batch }
+  public static readonly Option<ProgressLevel> ProgressOption =
+    new("--progress", $"While verifying, output information that helps track progress. " +
+                      $"Use '{ProgressLevel.Symbol}' to show progress across symbols such as methods and functions. " +
+                      $"Verification of a symbol may be split across several assertion batches. " +
+                      $"Use {ProgressLevel.Batch} to additionally show progress across batches.");
+
+  public static readonly Option<bool> IgnoreIndentation =
+    new("--ignore-indentation", "Do not report warnings for suspicious indentation") {
+      IsHidden = true
+    };
+
+  public static readonly Option<bool> WaitForDebugger =
+    new("--wait-for-debugger", "Lets the C# compiler block until a .NET debugger is attached") {
+      IsHidden = true
+    };
+
+  public static readonly Option<bool> PrintDiagnosticsRanges =
+    new("--print-ranges", "Prints not just the center, but also the start and end of diagnostics") {
       IsHidden = true
     };
 
@@ -94,8 +118,9 @@ The `text` format also includes a more detailed breakdown of what assertions app
   public static readonly Option<bool> JsonDiagnostics = new("--json-diagnostics", @"Deprecated. Return diagnostics in a JSON format.") {
     IsHidden = true
   };
+  public static readonly Option<bool> JsonOutput = new("--json-output", @"Return output in a JSON format.");
 
-  public static readonly Option<IList<FileInfo>> Libraries = new("--library",
+  public static readonly Option<IList<FileInfo>> Libraries = new("--library", () => new List<FileInfo>(),
     @"
 The contents of this file and any files it includes can be referenced from other files as if they were included. 
 However, these contents are skipped during code generation and verification.
@@ -120,18 +145,18 @@ The value may be a comma-separated list of files and folders.".TrimStart());
     return result;
   }
 
-  public static readonly Option<FileInfo> BuildFile = new(new[] { "--build", "-b" },
+  public static readonly Option<FileInfo> BuildFile = new(["--build", "-b"],
     "Specify the filepath that determines where to place and how to name build files.") {
     ArgumentHelpName = "file",
     IsHidden = true
   };
 
-  public static readonly Option<FileInfo> Output = new(new[] { "--output", "-o" },
+  public static readonly Option<FileInfo> Output = new(["--output", "-o"],
     "Specify the filename and location for the generated target language files.") {
     ArgumentHelpName = "file",
   };
 
-  public static readonly Option<IList<string>> PluginOption = new(new[] { "--plugin" },
+  public static readonly Option<IList<string>> PluginOption = new(["--plugin"],
     @"
 (experimental) One path to an assembly that contains at least one
 instantiatable class extending Microsoft.Dafny.Plugin.Rewriter. It
@@ -175,7 +200,7 @@ Note that quantifier variable domains (<- <Domain>) are available in both syntax
     ArgumentHelpName = "version",
   };
 
-  public static readonly Option<string> Target = new(new[] { "--target", "-t" }, () => "cs", @"
+  public static readonly Option<string> Target = new(["--target", "-t"], () => "cs", @"
 cs - Compile to .NET via C#.
 go - Compile to Go.
 js - Compile to JavaScript.
@@ -192,6 +217,13 @@ Note that the C++ backend has various limitations (see Docs/Compilation/Cpp.md).
     @"
 false - The char type represents any UTF-16 code unit.
 true - The char type represents any Unicode scalar value.".TrimStart()) {
+    IsHidden = true
+  };
+
+  public static readonly Option<bool> RawPointers = new("--raw-pointers", () => false,
+    @"(backend-specific: Rust)
+false - All class instances are reference-counted or garbage collected
+true - All class instances are raw pointers and need to be manually deallocated") {
     IsHidden = true
   };
 
@@ -214,7 +246,7 @@ true - Use an updated type-inference engine.".TrimStart()) {
 
   public static readonly Option<GeneralTraitsOptions> GeneralTraits = new("--general-traits", () => GeneralTraitsOptions.Legacy,
     @"
-legacy - Every trait implicitly extends 'object', and thus is a reference type. Only traits and reference types can extend traits.
+legacy (default) - Every trait implicitly extends 'object', and thus is a reference type. Only traits and reference types can extend traits.
 datatype - A trait is a reference type only if it or one of its ancestor traits is 'object'. Any non-'newtype' type with members can extend traits.
 full - (don't use; not yet completely supported) A trait is a reference type only if it or one of its ancestor traits is 'object'. Any type with members can extend traits.".TrimStart()) {
     IsHidden = true
@@ -246,11 +278,30 @@ true - Print debug information for the new type system.".TrimStart()) {
   public static readonly Option<bool> UseBaseFileName = new("--use-basename-for-filename",
     "When parsing use basename of file for tokens instead of the path supplied on the command line") {
   };
+  public static readonly Option<bool> EmitUncompilableCode = new("--emit-uncompilable-code",
+    "Rather than throwing an exception, allow compilers to emit uncompilable information including what is " +
+    "not compilable instead of regular code. Useful when developing compilers or to document for each test what " +
+    "compiler feature is missing") {
+  };
+  public static readonly Option<bool> Referrers = new("--referrers", () => false,
+    "Enables the modeling of backreferences in Dafny, so that one can reason about memory locations at " +
+    "which objects are being stored.") {
+    IsHidden = true
+  };
   public static readonly Option<bool> SpillTranslation = new("--spill-translation",
     @"In case the Dafny source code is translated to another language, emit that translation.") {
   };
 
   public static readonly Option<bool> WarnAsErrors = new("--warn-as-errors", () => true, "(Deprecated). Please use --allow-warnings instead") {
+    IsHidden = true
+  };
+
+  public enum InputTypeEnum {
+    Source,
+    Binary
+  }
+
+  public static readonly Option<InputTypeEnum> InputType = new("--input-format", () => InputTypeEnum.Source) {
     IsHidden = true
   };
 
@@ -274,6 +325,20 @@ May slow down verification slightly, or make it more brittle.
 May produce spurious warnings.") {
     IsHidden = true
   };
+  public static readonly Option<bool> SuggestProofRefactoring = new("--suggest-proof-refactoring", @"
+(experimental) Emits suggestions for moving assertions into by-proofs and hiding unused function definitions.
+May produce spurious suggestions. Use with --show-hints on the CLI.") {
+    IsHidden = true
+  };
+  public static readonly Option<bool> AnalyzeProofs = new("--analyze-proofs", @"
+Uses data from the verifier to suggest ways to refine the proof:
+Warning if any assertions are proved based on contradictory assumptions (vacuously).
+Warning if any `requires` clause or `assume` statement was not needed to complete verification.
+Suggestions for moving assertions into by-proofs and hiding unused function definitions.
+May slow down verification slightly, or make it more brittle.
+May produce spurious warnings.
+Use the `{:contradiction}` attribute to mark any `assert` statement intended to be part of a proof by contradiction.
+");
   public static readonly Option<string> VerificationCoverageReport = new("--verification-coverage-report",
     "Emit verification coverage report to a given directory, in the same format as a test coverage report.") {
     ArgumentHelpName = "directory"
@@ -335,6 +400,10 @@ Change the default opacity of functions.
 `autoRevealDependencies` makes all functions not explicitly labelled as opaque to be opaque but reveals them automatically in scopes which do not have `{:autoRevealDependencies false}`. 
 `opaque` means functions are always opaque so the opaque keyword is not needed, and functions must be revealed everywhere needed for a proof.".TrimStart()) {
   };
+
+  public static readonly Option<bool> TranslateStandardLibrary = new("--translate-standard-library", () => true,
+    @"When translating Dafny code to another language, Dafny will, for now, include the standard library as if these were source files. This causes conflicts when multiple such translated projects are combined. When combining such projects, please ensure that only one of them has --translate-standard-library set to true.
+");
 
   public static readonly Option<bool> UseStandardLibraries = new("--standard-libraries", () => false,
     @"
@@ -401,11 +470,12 @@ features like traits or co-inductive types.".TrimStart(), "cs");
 1 (default) - The char type represents any Unicode scalar value.".TrimStart(), defaultValue: true);
     DafnyOptions.RegisterLegacyUi(TypeSystemRefresh, DafnyOptions.ParseBoolean, "Language feature selection", "typeSystemRefresh", @"
 0 (default) - The type-inference engine and supported types are those of Dafny 4.0.
-1 - Use an updated type-inference engine. Warning: This mode is under construction and probably won't work at this time.".TrimStart(), defaultValue: false);
+1 - Use an updated type-inference engine.".TrimStart(), defaultValue: false);
     DafnyOptions.RegisterLegacyUi(GeneralTraits, DafnyOptions.ParseGeneralTraitsOption, "Language feature selection", "generalTraits", @"
 legacy (default) - Every trait implicitly extends 'object', and thus is a reference type. Only traits and reference types can extend traits.
 datatype - A trait is a reference type only if it or one of its ancestor traits is 'object'. Any non-'newtype' type with members can extend traits.
-full - (don't use; not yet completely supported) A trait is a reference type only if it or one of its ancestor traits is 'object'. Any type with members can extend traits.".TrimStart());
+full - (don't use; not yet completely supported) A trait is a reference type only if it or one of its ancestor traits is 'object'. Any type with members can extend traits.".TrimStart(),
+      defaultValue: GeneralTraitsOptions.Legacy);
     DafnyOptions.RegisterLegacyUi(GeneralNewtypes, DafnyOptions.ParseBoolean, "Language feature selection", "generalNewtypes", @"
 0 (default) - A newtype can only be based on numeric types or another newtype.
 1 - (requires /typeSystemRefresh:1) A newtype case be based on any non-reference, non-trait, non-arrow, non-ORDINAL type.".TrimStart(), false);
@@ -447,6 +517,7 @@ NoGhost - disable printing of functions, ghost methods, and proof
 
     DafnyOptions.RegisterLegacyUi(WarnContradictoryAssumptions, DafnyOptions.ParseImplicitEnable, "Verification options", "warnContradictoryAssumptions");
     DafnyOptions.RegisterLegacyUi(WarnRedundantAssumptions, DafnyOptions.ParseImplicitEnable, "Verification options", "warnRedundantAssumptions");
+    DafnyOptions.RegisterLegacyUi(SuggestProofRefactoring, DafnyOptions.ParseImplicitEnable, "Verification options", "suggestProofRefactoring");
 
     void ParsePrintMode(Option<PrintModes> option, Boogie.CommandLineParseState ps, DafnyOptions options) {
       if (ps.ConfirmArgumentCount(1)) {
@@ -455,7 +526,7 @@ NoGhost - disable printing of functions, ghost methods, and proof
         } else if (ps.args[ps.i].Equals("NoIncludes")) {
           options.Set(option, PrintModes.NoIncludes);
         } else if (ps.args[ps.i].Equals("NoGhost")) {
-          options.Set(option, PrintModes.NoGhost);
+          options.Set(option, PrintModes.NoGhostOrIncludes);
         } else if (ps.args[ps.i].Equals("DllEmbed")) {
           // This is called DllEmbed because it was previously only used inside Dafny-compiled .dll files for C#,
           // but it is now used by the LibraryBackend when building .doo files as well. 
@@ -500,6 +571,12 @@ NoGhost - disable printing of functions, ghost methods, and proof
     DafnyOptions.RegisterLegacyBinding(WarnRedundantAssumptions, (options, value) => {
       if (value) { options.TrackVerificationCoverage = true; }
     });
+    DafnyOptions.RegisterLegacyBinding(SuggestProofRefactoring, (options, value) => {
+      if (value) { options.TrackVerificationCoverage = true; }
+    });
+    DafnyOptions.RegisterLegacyBinding(AnalyzeProofs, (options, value) => {
+      if (value) { options.TrackVerificationCoverage = true; }
+    });
 
     DafnyOptions.RegisterLegacyBinding(Target, (options, value) => { options.CompilerName = value; });
 
@@ -531,7 +608,9 @@ NoGhost - disable printing of functions, ghost methods, and proof
 
     DafnyOptions.RegisterLegacyBinding(EnforceDeterminism, (options, value) => {
       options.ForbidNondeterminism = value;
-      options.DefiniteAssignmentLevel = 4;
+      if (!options.Get(RelaxDefiniteAssignment)) {
+        options.DefiniteAssignmentLevel = 4;
+      }
     });
     RelaxDefiniteAssignment.AddValidator(optionResult => {
       var enforceDeterminismResult = optionResult.FindResultFor(EnforceDeterminism);
@@ -556,59 +635,74 @@ NoGhost - disable printing of functions, ghost methods, and proof
       options.ShowProofObligationExpressions = value;
     });
 
-    DooFile.RegisterLibraryChecks(
-      new Dictionary<Option, OptionCompatibility.OptionCheck>() {
-        { UnicodeCharacters, OptionCompatibility.CheckOptionMatches },
-        { EnforceDeterminism, OptionCompatibility.CheckOptionLocalImpliesLibrary },
-        { RelaxDefiniteAssignment, OptionCompatibility.OptionLibraryImpliesLocalError },
-        { AllowAxioms, OptionCompatibility.OptionLibraryImpliesLocalError },
-        { AllowWarnings, OptionCompatibility.OptionLibraryImpliesLocalWarning },
-        { AllowDeprecation, OptionCompatibility.OptionLibraryImpliesLocalWarning },
-        { WarnShadowing, OptionCompatibility.OptionLibraryImpliesLocalWarning },
-        { UseStandardLibraries, OptionCompatibility.OptionLibraryImpliesLocalError },
+    DafnyOptions.RegisterLegacyBinding(RawPointers, (options, value) => {
+      if (value && options.Get(CommonOptionBag.Target) != "rs") {
+        Console.Error.WriteLine("Error:  --raw-pointers can only be used with --target:rs or -t:rs");
+        System.Environment.Exit(1);
       }
-    );
-    DooFile.RegisterNoChecksNeeded(WarnAsErrors, false);
-    DooFile.RegisterNoChecksNeeded(ProgressOption, false);
-    DooFile.RegisterNoChecksNeeded(LogLocation, false);
-    DooFile.RegisterNoChecksNeeded(LogLevelOption, false);
-    DooFile.RegisterNoChecksNeeded(ManualTriggerOption, true);
-    DooFile.RegisterNoChecksNeeded(ShowHints, false);
-    DooFile.RegisterNoChecksNeeded(Libraries, false);
-    DooFile.RegisterNoChecksNeeded(Output, false);
-    DooFile.RegisterNoChecksNeeded(PluginOption, false);
-    DooFile.RegisterNoChecksNeeded(Prelude, false);
-    DooFile.RegisterNoChecksNeeded(Target, false);
-    DooFile.RegisterNoChecksNeeded(Verbose, false);
-    DooFile.RegisterNoChecksNeeded(JsonDiagnostics, false);
-    DooFile.RegisterNoChecksNeeded(QuantifierSyntax, true);
-    DooFile.RegisterNoChecksNeeded(SpillTranslation, false);
-    DooFile.RegisterNoChecksNeeded(StdIn, false);
-    DooFile.RegisterNoChecksNeeded(TestAssumptions, false);
-    DooFile.RegisterNoChecksNeeded(ManualLemmaInduction, true);
-    DooFile.RegisterNoChecksNeeded(TypeInferenceDebug, false);
-    DooFile.RegisterNoChecksNeeded(GeneralTraits, false);
-    DooFile.RegisterNoChecksNeeded(GeneralNewtypes, false);
-    DooFile.RegisterNoChecksNeeded(TypeSystemRefresh, false);
-    DooFile.RegisterNoChecksNeeded(VerificationLogFormat, false);
-    DooFile.RegisterNoChecksNeeded(VerifyIncludedFiles, false);
-    DooFile.RegisterNoChecksNeeded(DisableNonLinearArithmetic, true);
-    DooFile.RegisterNoChecksNeeded(NewTypeInferenceDebug, false);
-    DooFile.RegisterNoChecksNeeded(UseBaseFileName, false);
-    DooFile.RegisterNoChecksNeeded(WarnMissingConstructorParenthesis, true);
-    DooFile.RegisterNoChecksNeeded(IncludeRuntimeOption, false);
-    DooFile.RegisterNoChecksNeeded(InternalIncludeRuntimeOptionForExecution, false);
-    DooFile.RegisterNoChecksNeeded(WarnContradictoryAssumptions, true);
-    DooFile.RegisterNoChecksNeeded(WarnRedundantAssumptions, true);
-    DooFile.RegisterNoChecksNeeded(VerificationCoverageReport, false);
-    DooFile.RegisterNoChecksNeeded(NoTimeStampForCoverageReport, false);
-    DooFile.RegisterNoChecksNeeded(DefaultFunctionOpacity, true);
-    DooFile.RegisterNoChecksNeeded(OptimizeErasableDatatypeWrapper, false); // TODO needs translation record registration
-    DooFile.RegisterNoChecksNeeded(AddCompileSuffix, false);  // TODO needs translation record registration
-    DooFile.RegisterNoChecksNeeded(SystemModule, false);
-    DooFile.RegisterNoChecksNeeded(ExecutionCoverageReport, false);
-    DooFile.RegisterNoChecksNeeded(ExtractCounterexample, false);
-    DooFile.RegisterNoChecksNeeded(ShowProofObligationExpressions, false);
+    });
+
+    OptionRegistry.RegisterGlobalOption(UnicodeCharacters, OptionCompatibility.CheckOptionMatches);
+    OptionRegistry.RegisterGlobalOption(EnforceDeterminism, OptionCompatibility.CheckOptionLocalImpliesLibrary);
+    OptionRegistry.RegisterGlobalOption(RelaxDefiniteAssignment, OptionCompatibility.OptionLibraryImpliesLocalError);
+    OptionRegistry.RegisterGlobalOption(AllowAxioms, OptionCompatibility.OptionLibraryImpliesLocalError);
+    OptionRegistry.RegisterGlobalOption(AllowWarnings, OptionCompatibility.OptionLibraryImpliesLocalWarning);
+    OptionRegistry.RegisterGlobalOption(AllowDeprecation, OptionCompatibility.OptionLibraryImpliesLocalWarning);
+    OptionRegistry.RegisterGlobalOption(WarnShadowing, OptionCompatibility.OptionLibraryImpliesLocalWarning);
+    OptionRegistry.RegisterGlobalOption(UseStandardLibraries, OptionCompatibility.OptionLibraryImpliesLocalError);
+    OptionRegistry.RegisterGlobalOption(Referrers, OptionCompatibility.CheckOptionMatches);
+    OptionRegistry.RegisterOption(TranslateStandardLibrary, OptionScope.Cli);
+    OptionRegistry.RegisterOption(WarnAsErrors, OptionScope.Cli);
+    OptionRegistry.RegisterOption(ProgressOption, OptionScope.Cli);
+    OptionRegistry.RegisterOption(LogLocation, OptionScope.Cli);
+    OptionRegistry.RegisterOption(LogLevelOption, OptionScope.Cli);
+    OptionRegistry.RegisterOption(ManualTriggerOption, OptionScope.Module);
+    OptionRegistry.RegisterOption(ShowHints, OptionScope.Cli);
+    OptionRegistry.RegisterOption(Libraries, OptionScope.Module);
+    OptionRegistry.RegisterOption(Output, OptionScope.Cli);
+    OptionRegistry.RegisterOption(PluginOption, OptionScope.Cli);
+    OptionRegistry.RegisterOption(Prelude, OptionScope.Cli);
+    OptionRegistry.RegisterOption(Target, OptionScope.Cli);
+    OptionRegistry.RegisterOption(Verbose, OptionScope.Cli);
+    OptionRegistry.RegisterOption(JsonOutput, OptionScope.Cli);
+    OptionRegistry.RegisterOption(JsonDiagnostics, OptionScope.Cli);
+    OptionRegistry.RegisterOption(QuantifierSyntax, OptionScope.Module);
+    OptionRegistry.RegisterOption(SpillTranslation, OptionScope.Cli);
+    OptionRegistry.RegisterOption(StdIn, OptionScope.Cli);
+    OptionRegistry.RegisterOption(TestAssumptions, OptionScope.Cli);
+    OptionRegistry.RegisterOption(ManualLemmaInduction, OptionScope.Module);
+    OptionRegistry.RegisterOption(TypeInferenceDebug, OptionScope.Cli);
+    OptionRegistry.RegisterOption(GeneralTraits, OptionScope.Cli);
+    OptionRegistry.RegisterOption(GeneralNewtypes, OptionScope.Cli);
+    OptionRegistry.RegisterOption(TypeSystemRefresh, OptionScope.Cli);
+    OptionRegistry.RegisterOption(VerificationLogFormat, OptionScope.Cli);
+    OptionRegistry.RegisterOption(VerifyIncludedFiles, OptionScope.Cli);
+    OptionRegistry.RegisterOption(DisableNonLinearArithmetic, OptionScope.Module);
+    OptionRegistry.RegisterOption(NewTypeInferenceDebug, OptionScope.Cli);
+    OptionRegistry.RegisterOption(UseBaseFileName, OptionScope.Cli);
+    OptionRegistry.RegisterOption(EmitUncompilableCode, OptionScope.Cli);
+    OptionRegistry.RegisterOption(RawPointers, OptionScope.Cli);
+    OptionRegistry.RegisterOption(WarnMissingConstructorParenthesis, OptionScope.Module);
+    OptionRegistry.RegisterOption(IncludeRuntimeOption, OptionScope.Cli);
+    OptionRegistry.RegisterOption(InternalIncludeRuntimeOptionForExecution, OptionScope.Cli);
+    OptionRegistry.RegisterOption(WarnContradictoryAssumptions, OptionScope.Module);
+    OptionRegistry.RegisterOption(WarnRedundantAssumptions, OptionScope.Module);
+    OptionRegistry.RegisterOption(SuggestProofRefactoring, OptionScope.Module);
+    OptionRegistry.RegisterOption(AnalyzeProofs, OptionScope.Module);
+    OptionRegistry.RegisterOption(VerificationCoverageReport, OptionScope.Cli);
+    OptionRegistry.RegisterOption(NoTimeStampForCoverageReport, OptionScope.Cli);
+    OptionRegistry.RegisterOption(DefaultFunctionOpacity, OptionScope.Module);
+    OptionRegistry.RegisterOption(OptimizeErasableDatatypeWrapper, OptionScope.Cli); // TODO needs translation record registration
+    OptionRegistry.RegisterOption(AddCompileSuffix, OptionScope.Cli);  // TODO needs translation record registration
+    OptionRegistry.RegisterOption(SystemModule, OptionScope.Cli);
+    OptionRegistry.RegisterOption(ExecutionCoverageReport, OptionScope.Cli);
+    OptionRegistry.RegisterOption(ExtractCounterexample, OptionScope.Cli);
+    OptionRegistry.RegisterOption(ShowProofObligationExpressions, OptionScope.Cli);
+    OptionRegistry.RegisterOption(InputType, OptionScope.Cli);
+    OptionRegistry.RegisterOption(PrintDiagnosticsRanges, OptionScope.Cli);
+    OptionRegistry.RegisterOption(WaitForDebugger, OptionScope.Cli);
+    OptionRegistry.RegisterOption(IgnoreIndentation, OptionScope.Cli);
+    OptionRegistry.RegisterOption(CheckSourceLocationConsistency, OptionScope.Cli);
   }
 }
 
